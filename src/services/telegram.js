@@ -241,7 +241,10 @@ export function initTelegramBot() {
   // /status command (diagnostic & helper to find chat ID)
   bot.command('status', async (ctx) => {
     const isTargetChat = String(ctx.chat.id) === String(config.telegram.chatId);
-    const shopConfigured = Boolean(config.shopify.shopDomain && config.shopify.adminAccessToken);
+    const shopConfigured = Boolean(
+      config.shopify.shopDomain &&
+      (config.shopify.adminAccessToken || (config.shopify.clientId && config.shopify.clientSecret))
+    );
 
     await ctx.reply(
       `⚙️ <b>Bot & System Status:</b>\n\n` +

@@ -6,7 +6,8 @@ A fast, lightweight, and secure Node.js service that connects your Shopify store
 
 ## 🌟 Key Features
 
-- **⚡ Instant Order Alerts**: Dispatches rich, itemized notifications whenever an `orders/create` webhook is received from Shopify.
+- **⚡ Instant Dual Alerts**: Dispatches rich, itemized notifications whenever an `orders/create` webhook is received from Shopify to both **Telegram** and **WhatsApp**.
+- **📱 Personal WhatsApp Integration**: Connect your own personal WhatsApp account directly via Multi-Device QR code (no Meta WhatsApp Business API fees!).
 - **🔒 Tamper-Proof Webhook Security**: Verifies Shopify's `X-Shopify-Hmac-Sha256` signature using your app secret.
 - **💬 In-Chat Order Lookups**:
   - `/orders [limit]` — Retrieves latest orders (default: 5).
@@ -34,34 +35,39 @@ A fast, lightweight, and secure Node.js service that connects your Shopify store
 ### Step 2: Shopify API Setup
 
 1. In your Shopify Admin, go to **Settings** > **Apps and sales channels** > **Develop apps**.
-2. Click **Create an app** (Name it e.g. `Telegram Order Notifier`).
+2. Click **Create an app** (Name it e.g. `Order Notifier`).
 3. Click **Configure Admin API scopes**:
    - Enable **`read_orders`** (and optionally `read_customers`).
 4. Click **Save**, then click **Install app** at the top right.
-5. Reveal and copy the **Admin API access token** (starts with `shpat_...`).
+5. Reveal and copy the **Admin API access token** (starts with `shpat_...`) or use your Dev Dashboard Client ID + Secret.
 6. Note your store domain (e.g., `my-shop-name.myshopify.com`).
 
 ---
 
-### Step 3: Configure Environment Variables
+### Step 3: WhatsApp Setup (Personal Account)
+
+1. Set `ENABLE_WHATSAPP=true` in your `.env` file.
+2. Run `npm start`. A QR code will display in your terminal.
+3. Open WhatsApp on your phone:
+   - On Android: Tap the 3 dots (top-right) > **Linked devices** > **Link a device**.
+   - On iPhone: Go to **Settings** > **Linked Devices** > **Link a device**.
+4. Scan the terminal QR code.
+5. Once connected, the console will **automatically list all your WhatsApp groups with their exact IDs**!
+6. Copy the target group ID (e.g. `120363028123456789@g.us`) and paste it into `WHATSAPP_GROUP_ID` in your `.env` file.
+
+---
+
+### Step 4: Configure Environment Variables
 
 1. Copy `.env.example` to `.env`:
    ```bash
    cp .env.example .env
    ```
-2. Open `.env` and fill in your details:
-   ```env
-   TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
-   TELEGRAM_CHAT_ID=-1001234567890
-   SHOPIFY_SHOP_DOMAIN=my-shop-name.myshopify.com
-   SHOPIFY_ADMIN_API_ACCESS_TOKEN=shpat_xxxxxxxxxxxxxxxxxxxxxxxx
-   SHOPIFY_WEBHOOK_SECRET=your_webhook_signing_secret
-   PORT=3000
-   ```
+2. Open `.env` and fill in your details.
 
 ---
 
-### Step 4: Run the Bot
+### Step 5: Run the Bot
 
 1. Install dependencies (if not already done):
    ```bash
@@ -78,7 +84,7 @@ A fast, lightweight, and secure Node.js service that connects your Shopify store
 
 ---
 
-### Step 5: Connect Shopify Webhook
+### Step 6: Connect Shopify Webhook
 
 Shopify sends webhooks via HTTPS. For development on localhost, you can expose your local server using a tunnel:
 

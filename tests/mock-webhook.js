@@ -59,7 +59,20 @@ async function runSelfTests() {
   if (!formattedHtml.includes('#1024') || !formattedHtml.includes('Jane Doe') || !formattedHtml.includes('79.99 USD')) {
     throw new Error('Order formatting test failed!');
   }
-  console.log('✅ Formatting test passed!\n');
+  console.log('✅ Telegram formatting test passed!\n');
+
+  // Test 1b: Format WhatsApp Order
+  const { formatWhatsAppOrder } = await import('../src/services/whatsapp.js');
+  console.log('1️⃣b Testing WhatsApp Order Notification Formatting:');
+  const formattedWa = formatWhatsAppOrder(sampleOrder);
+  console.log('--- WHATSAPP OUTPUT START ---');
+  console.log(formattedWa);
+  console.log('--- WHATSAPP OUTPUT END ---\n');
+
+  if (!formattedWa.includes('Jane Doe') || !formattedWa.includes('*79.99 USD*')) {
+    throw new Error('WhatsApp order formatting test failed!');
+  }
+  console.log('✅ WhatsApp formatting test passed!\n');
 
   // Test 2: Format Order List
   console.log('2️⃣  Testing Orders List Formatting:');

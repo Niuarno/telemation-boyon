@@ -27,6 +27,11 @@ export const config = {
     webhookSecret: cleanEnv(process.env.SHOPIFY_WEBHOOK_SECRET || process.env.SHOPIFY_CLIENT_SECRET),
     apiVersion: cleanEnv(process.env.SHOPIFY_API_VERSION) || '2024-01',
   },
+
+  whatsapp: {
+    enabled: cleanEnv(process.env.ENABLE_WHATSAPP).toLowerCase() === 'true',
+    groupId: cleanEnv(process.env.WHATSAPP_GROUP_ID),
+  },
 };
 
 /**

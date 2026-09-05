@@ -2,6 +2,7 @@ import express from 'express';
 import crypto from 'crypto';
 import { config } from '../config.js';
 import { sendOrderAlert } from '../services/telegram.js';
+import { sendWhatsAppOrderAlert } from '../services/whatsapp.js';
 
 export const webhookRouter = express.Router();
 
@@ -44,13 +45,18 @@ export function verifyShopifyHmac(rawBody, hmacHeader, secret) {
 webhookRouter.post('/shopify', async (req, res) => {
   const hmac = req.headers['x-shopify-hmac-sha256'];
   const topic = req.headers['x-shopify-topic'] || 'orders/create';
-  const shopDomain = req.headers['x-shopify-shop-domain'];
+  const shopDomain = req.headers['x-shopify-shop-domain'] || 'unknown';
 
-  // Verify HMAC signature
-  const isValid = verifyShopifyHmac(req.rawBody, hmac, config.shopify.webhookSecret);
+  console.log(`\n📩 Incoming Shopify Webhook: [${topic}] from ${shopDomain}`);
+
+  // Check against either SHOPIFY_WEBHOOK_SECRET or SHOPIFY_CLIENT_SECRET
+  const isValid = 
+    verifyShopifyHmac(req.rawBody, hmac, config.shopify.webhookSecret) ||
+    (config.shopify.clientSecret && verifyShopifyHmac(req.rawBody, hmac, config.shopify.clientSecret));
 
   if (!isValid) {
-    console.error('❌ Unauthorized webhook request: Invalid HMAC signature.');
+    console.error('❌ Unauthorized webhook: HMAC signature mismatch.');
+    console.error('   Ensure SHOPIFY_WEBHOOK_SECRET in .env matches your Shopify Webhook signing secret.');
     return res.status(401).json({ error: 'Invalid HMAC signature' });
   }
 
@@ -66,11 +72,26 @@ webhookRouter.post('/shopify', async (req, res) => {
     return;
   }
 
-  try {
-    console.log(`🚀 Dispatching Telegram notification for Order #${orderData.order_number || orderData.name || orderData.id}...`);
-    await sendOrderAlert(orderData);
-    console.log(`✅ Telegram alert sent successfully for Order #${orderData.order_number || orderData.name || orderData.id}`);
-  } catch (err) {
-    console.error('❌ Failed to send Telegram alert for order:', err.message);
+  const orderIdentifier = `#${orderData.order_number || orderData.name || orderData.id}`;
+
+  // Dispatch to Telegram and WhatsApp in parallel
+  const dispatches = [];
+
+  // Telegram dispatch
+  dispatches.push(
+    sendOrderAlert(orderData)
+      .then(() => console.log(`✅ [Telegram] Alert sent successfully for Order ${orderIdentifier}`))
+      .catch((err) => console.error(`❌ [Telegram] Failed to send alert: ${err.message}`))
+  );
+
+  // WhatsApp dispatch (if enabled)
+  if (config.whatsapp.enabled) {
+    dispatches.push(
+      sendWhatsAppOrderAlert(orderData)
+        .then(() => console.log(`✅ [WhatsApp] Alert sent successfully for Order ${orderIdentifier}`))
+        .catch((err) => console.error(`❌ [WhatsApp] Failed to send alert: ${err.message}`))
+    );
   }
+
+  await Promise.allSettled(dispatches);
 });

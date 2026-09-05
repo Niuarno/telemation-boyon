@@ -1,6 +1,7 @@
 import express from 'express';
 import { config, validateConfig } from './config.js';
 import { initTelegramBot, bot } from './services/telegram.js';
+import { initWhatsApp, waSocket } from './services/whatsapp.js';
 import { webhookRouter } from './routes/webhook.js';
 
 // Validate and diagnose configurations on startup
@@ -54,6 +55,14 @@ if (telegramBot) {
     });
 }
 
+// Start WhatsApp Service (if enabled)
+if (config.whatsapp.enabled) {
+  console.log('📱 Starting WhatsApp Client...');
+  initWhatsApp().catch((err) => {
+    console.error('❌ Failed to start WhatsApp service:', err.message);
+  });
+}
+
 // Start HTTP Server
 const server = app.listen(config.port, () => {
   console.log(`🌐 Webhook server listening on port ${config.port}`);
@@ -65,6 +74,11 @@ const shutdown = () => {
   console.log('\n🛑 Gracefully shutting down...');
   if (telegramBot) {
     telegramBot.stop();
+  }
+  if (waSocket) {
+    try {
+      waSocket.end(new Error('Server shutting down'));
+    } catch {}
   }
   server.close(() => {
     console.log('💤 Server closed.');
