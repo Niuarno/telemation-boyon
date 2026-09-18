@@ -32,6 +32,16 @@ export const config = {
     enabled: cleanEnv(process.env.ENABLE_WHATSAPP).toLowerCase() === 'true',
     groupId: cleanEnv(process.env.WHATSAPP_GROUP_ID),
   },
+
+  dashboard: {
+    ingestUrl: cleanEnv(process.env.DASHBOARD_INGEST_URL),
+    internalSecret: cleanEnv(process.env.DASHBOARD_INTERNAL_SECRET),
+  },
+
+  supabase: {
+    url: cleanEnv(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://izqyqvmakdlwflryzspn.supabase.co'),
+    serviceRoleKey: cleanEnv(process.env.SUPABASE_SERVICE_ROLE_KEY),
+  },
 };
 
 /**

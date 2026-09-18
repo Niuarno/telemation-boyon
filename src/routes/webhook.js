@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { config } from '../config.js';
 import { sendOrderAlert } from '../services/telegram.js';
 import { sendWhatsAppOrderAlert } from '../services/whatsapp.js';
+import { saveOrderToSupabase } from '../services/supabase.js';
 
 export const webhookRouter = express.Router();
 
@@ -90,6 +91,40 @@ webhookRouter.post('/shopify', async (req, res) => {
       sendWhatsAppOrderAlert(orderData)
         .then(() => console.log(`✅ [WhatsApp] Alert sent successfully for Order ${orderIdentifier}`))
         .catch((err) => console.error(`❌ [WhatsApp] Failed to send alert: ${err.message}`))
+    );
+  }
+
+  // Direct Supabase Ingest dispatch
+  dispatches.push(
+    saveOrderToSupabase(orderData)
+      .then((res) => {
+        if (res?.success) {
+          console.log(`✅ [Supabase Ingest] Order ${orderIdentifier} stored in database`);
+        }
+      })
+      .catch((err) => console.error(`❌ [Supabase Ingest] Error: ${err.message}`))
+  );
+
+  // Dashboard Ingest dispatch (if configured)
+  if (config.dashboard?.ingestUrl) {
+    dispatches.push(
+      fetch(config.dashboard.ingestUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-internal-secret': config.dashboard.internalSecret || '',
+        },
+        body: JSON.stringify(orderData),
+      })
+        .then(async (res) => {
+          if (!res.ok) {
+            const errText = await res.text().catch(() => '');
+            console.error(`❌ [Dashboard Ingest] HTTP ${res.status}: ${errText}`);
+          } else {
+            console.log(`✅ [Dashboard Ingest] Successfully forwarded Order ${orderIdentifier} to Dashboard`);
+          }
+        })
+        .catch((err) => console.error(`❌ [Dashboard Ingest] Failed to forward order: ${err.message}`))
     );
   }
 
