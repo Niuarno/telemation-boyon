@@ -4,5 +4,4 @@ node_modules/
 .next/
 .DS_Store
 *.log
-auth_whatsapp/*
-!auth_whatsapp/creds.json
+auth_whatsapp/

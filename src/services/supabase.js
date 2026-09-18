@@ -4,7 +4,7 @@ import { config } from '../config.js';
 
 let supabaseClient = null;
 
-function getSupabaseClient() {
+export function getSupabaseClient() {
   if (supabaseClient) return supabaseClient;
 
   const url = config.supabase?.url;

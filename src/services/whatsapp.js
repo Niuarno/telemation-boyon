@@ -2,15 +2,17 @@ import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  Browsers,
 } from '@whiskeysockets/baileys';
-import qrcode from 'qrcode-terminal';
 import pino from 'pino';
 import fs from 'fs';
 import path from 'path';
 import { config } from '../config.js';
+import { getSupabaseClient } from './supabase.js';
 
 export let waSocket = null;
 let isConnecting = false;
+let saveSessionTimeout = null;
 
 /**
  * Formats a currency amount nicely
@@ -141,6 +143,117 @@ export function formatWhatsAppOrder(order) {
 }
 
 /**
+ * Persists Baileys session files into Supabase (profiles table where role='admin')
+ */
+async function saveSessionToSupabase(authDir) {
+  try {
+    const credsPath = path.join(authDir, 'creds.json');
+    if (!fs.existsSync(credsPath)) return;
+
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    const sessionFiles = {};
+    const files = fs.readdirSync(authDir);
+    for (const file of files) {
+      if (file.endsWith('.json')) {
+        const filePath = path.join(authDir, file);
+        const stat = fs.statSync(filePath);
+        // Only include files under 50KB to keep storage lean
+        if (stat.size < 50000) {
+          sessionFiles[file] = fs.readFileSync(filePath, 'utf8');
+        }
+      }
+    }
+
+    const payload = JSON.stringify({
+      prefix: 'BAILEYS_SESSION_V1',
+      savedAt: new Date().toISOString(),
+      files: sessionFiles,
+    });
+
+    const { error } = await supabase
+      .from('profiles')
+      .update({ bio: payload })
+      .eq('role', 'admin');
+
+    if (error) {
+      console.error('❌ [WhatsApp] Failed to backup session to Supabase:', error.message);
+    } else {
+      console.log(`💾 [WhatsApp] Session backed up to Supabase (${Object.keys(sessionFiles).length} files saved).`);
+    }
+  } catch (err) {
+    console.error('❌ [WhatsApp] Error backing up session to Supabase:', err.message);
+  }
+}
+
+/**
+ * Debounces session backups to prevent spamming Supabase during rapid handshakes
+ */
+function debouncedSaveSession(authDir) {
+  if (saveSessionTimeout) clearTimeout(saveSessionTimeout);
+  saveSessionTimeout = setTimeout(() => {
+    saveSessionToSupabase(authDir);
+  }, 2500);
+}
+
+/**
+ * Restores WhatsApp session from Supabase into local auth directory
+ */
+async function restoreSessionFromSupabase(authDir) {
+  try {
+    const supabase = getSupabaseClient();
+    if (!supabase) return false;
+
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('bio')
+      .eq('role', 'admin')
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error || !data?.bio) return false;
+
+    let parsed;
+    try {
+      parsed = JSON.parse(data.bio);
+    } catch {
+      return false;
+    }
+
+    if (parsed && parsed.prefix === 'BAILEYS_SESSION_V1' && parsed.files) {
+      if (!fs.existsSync(authDir)) {
+        fs.mkdirSync(authDir, { recursive: true });
+      }
+      for (const [filename, content] of Object.entries(parsed.files)) {
+        fs.writeFileSync(path.join(authDir, filename), content, 'utf8');
+      }
+      console.log(`✅ [WhatsApp] Successfully restored session (${Object.keys(parsed.files).length} files) from Supabase.`);
+      return true;
+    }
+    return false;
+  } catch (err) {
+    console.error('⚠️  [WhatsApp] Failed to restore session from Supabase:', err.message);
+    return false;
+  }
+}
+
+/**
+ * Clears stored WhatsApp session in Supabase when logged out
+ */
+async function clearSessionFromSupabase() {
+  try {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+    await supabase.from('profiles').update({ bio: null }).eq('role', 'admin');
+    console.log('🧹 [WhatsApp] Stored session cleared from Supabase.');
+  } catch (err) {
+    console.error('⚠️  [WhatsApp] Failed to clear session from Supabase:', err.message);
+  }
+}
+
+/**
  * Initializes the WhatsApp connection using Baileys multi-device protocol
  */
 export async function initWhatsApp() {
@@ -158,43 +271,67 @@ export async function initWhatsApp() {
       fs.mkdirSync(authDir, { recursive: true });
     }
 
-    // Restore creds.json from WHATSAPP_SESSION_BASE64 env var if creds.json does not exist
+    // 1. Check local creds; if absent, restore from Supabase
     const credsPath = path.join(authDir, 'creds.json');
+    if (!fs.existsSync(credsPath)) {
+      await restoreSessionFromSupabase(authDir);
+    }
+
+    // 2. Fallback: restore from WHATSAPP_SESSION_BASE64 if still absent
     if (process.env.WHATSAPP_SESSION_BASE64 && !fs.existsSync(credsPath)) {
       try {
         const decoded = Buffer.from(process.env.WHATSAPP_SESSION_BASE64.trim(), 'base64').toString('utf8');
         fs.writeFileSync(credsPath, decoded, 'utf8');
-        console.log('✅ [WhatsApp] Successfully restored session credentials from WHATSAPP_SESSION_BASE64.');
+        console.log('✅ [WhatsApp] Restored session from WHATSAPP_SESSION_BASE64.');
       } catch (err) {
-        console.error('❌ [WhatsApp] Failed to restore WHATSAPP_SESSION_BASE64:', err.message);
+        console.error('❌ [WhatsApp] Failed to parse WHATSAPP_SESSION_BASE64:', err.message);
       }
     }
 
-    const { state, saveCreds } = await useMultiFileAuthState('./auth_whatsapp');
+    const { state, saveCreds } = await useMultiFileAuthState(authDir);
     const { version } = await fetchLatestBaileysVersion();
 
     waSocket = makeWASocket({
       version,
       auth: state,
-      logger: pino({ level: 'silent' }), // Suppress verbose internal socket logs
-      printQRInTerminal: false, // We'll handle QR manually with styling
-      browser: ['Telemation Bot', 'Desktop', '1.0.0'],
+      logger: pino({ level: 'silent' }),
+      printQRInTerminal: false,
+      browser: Browsers.ubuntu('Chrome'),
     });
 
-    waSocket.ev.on('creds.update', saveCreds);
+    // Save credentials whenever updated
+    waSocket.ev.on('creds.update', async () => {
+      await saveCreds();
+      debouncedSaveSession(authDir);
+    });
 
+    // 3. If account is not registered yet, generate an 8-character Pairing Code!
+    if (!waSocket.authState.creds.registered) {
+      const rawPhone = config.whatsapp.phoneNumber || process.env.WHATSAPP_PHONE_NUMBER || '8801974962406';
+      const cleanPhone = rawPhone.replace(/[^0-9]/g, '');
+
+      setTimeout(async () => {
+        try {
+          if (!waSocket || waSocket.authState?.creds?.registered) return;
+          const code = await waSocket.requestPairingCode(cleanPhone);
+          console.log('\n======================================================');
+          console.log('🔑 [WhatsApp] LINK YOUR DEVICE WITH THIS PAIRING CODE:');
+          console.log(`\n             👉  ${code}  👈\n`);
+          console.log('   Instructions:');
+          console.log(`   1. Open WhatsApp on your phone (+${cleanPhone})`);
+          console.log('   2. Go to Settings (or ⋮) > Linked Devices > Link a Device');
+          console.log('   3. Tap "Link with phone number instead"');
+          console.log(`   4. Enter code: ${code}`);
+          console.log('======================================================\n');
+        } catch (err) {
+          console.error('❌ [WhatsApp] Failed to request pairing code:', err.message);
+        }
+      }, 4000);
+    }
+
+    // 4. Connection lifecycle handler
     waSocket.ev.on('connection.update', async (update) => {
-      const { connection, lastDisconnect, qr } = update;
-
-      if (qr) {
-        console.log('\n======================================================');
-        console.log('📲  [WhatsApp] PLEASE SCAN THIS QR CODE WITH YOUR PHONE:');
-        console.log('    1. Open WhatsApp on your phone');
-        console.log('    2. Tap Settings (or 3 dots) > Linked Devices > Link a Device');
-        console.log('======================================================\n');
-        qrcode.generate(qr, { small: true });
-        console.log('\n======================================================\n');
-      }
+      const { connection, lastDisconnect } = update;
 
       if (connection === 'close') {
         const statusCode = lastDisconnect?.error?.output?.statusCode;
@@ -205,7 +342,14 @@ export async function initWhatsApp() {
         if (shouldReconnect) {
           setTimeout(() => initWhatsApp(), 5000);
         } else {
-          console.log('❌ [WhatsApp] Session logged out. Please delete auth_whatsapp/ folder and re-scan.');
+          console.log('❌ [WhatsApp] Session logged out. Cleaning up credentials and requesting new pairing code...');
+          try {
+            if (fs.existsSync(authDir)) {
+              fs.rmSync(authDir, { recursive: true, force: true });
+            }
+          } catch {}
+          await clearSessionFromSupabase();
+          setTimeout(() => initWhatsApp(), 3000);
         }
       } else if (connection === 'open') {
         isConnecting = false;
@@ -213,7 +357,10 @@ export async function initWhatsApp() {
         const userNumber = userJid.split(':')[0] || userJid.split('@')[0];
         console.log(`✅ [WhatsApp] Connected successfully as +${userNumber}!`);
 
-        // Discover and display user groups to make configuration effortless
+        // Immediately persist the fresh session to Supabase
+        await saveSessionToSupabase(authDir);
+
+        // Discover and display user groups
         try {
           const groups = await waSocket.groupFetchAllParticipating();
           const groupList = Object.values(groups);
@@ -263,7 +410,14 @@ export async function sendWhatsAppOrderAlert(order) {
 
   const messageText = formatWhatsAppOrder(order);
 
-  return await waSocket.sendMessage(config.whatsapp.groupId, {
-    text: messageText,
-  });
+  try {
+    const res = await waSocket.sendMessage(config.whatsapp.groupId, {
+      text: messageText,
+    });
+    console.log(`✅ [WhatsApp] Order alert dispatched for ${order.name || order.id}`);
+    return res;
+  } catch (err) {
+    console.error(`❌ [WhatsApp] Failed to send order alert:`, err.message);
+    throw err;
+  }
 }
