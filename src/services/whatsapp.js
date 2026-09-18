@@ -232,8 +232,8 @@ export async function sendWhatsAppOrderAlert(order) {
     return;
   }
 
-  if (!waSocket) {
-    console.warn('⚠️  [WhatsApp] Cannot send alert: WhatsApp socket is not connected.');
+  if (!waSocket || !waSocket.user) {
+    console.warn('⚠️  [WhatsApp] Cannot send alert: WhatsApp client is not logged in / connected.');
     return;
   }
 
