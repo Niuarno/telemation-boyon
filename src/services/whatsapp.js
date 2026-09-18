@@ -5,6 +5,8 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
+import fs from 'fs';
+import path from 'path';
 import { config } from '../config.js';
 
 export let waSocket = null;
@@ -151,6 +153,23 @@ export async function initWhatsApp() {
   isConnecting = true;
 
   try {
+    const authDir = path.resolve('./auth_whatsapp');
+    if (!fs.existsSync(authDir)) {
+      fs.mkdirSync(authDir, { recursive: true });
+    }
+
+    // Restore creds.json from WHATSAPP_SESSION_BASE64 env var if creds.json does not exist
+    const credsPath = path.join(authDir, 'creds.json');
+    if (process.env.WHATSAPP_SESSION_BASE64 && !fs.existsSync(credsPath)) {
+      try {
+        const decoded = Buffer.from(process.env.WHATSAPP_SESSION_BASE64.trim(), 'base64').toString('utf8');
+        fs.writeFileSync(credsPath, decoded, 'utf8');
+        console.log('✅ [WhatsApp] Successfully restored session credentials from WHATSAPP_SESSION_BASE64.');
+      } catch (err) {
+        console.error('❌ [WhatsApp] Failed to restore WHATSAPP_SESSION_BASE64:', err.message);
+      }
+    }
+
     const { state, saveCreds } = await useMultiFileAuthState('./auth_whatsapp');
     const { version } = await fetchLatestBaileysVersion();
 
