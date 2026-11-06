@@ -30,7 +30,7 @@ export const config = {
 
   whatsapp: {
     enabled: cleanEnv(process.env.ENABLE_WHATSAPP).toLowerCase() === 'true',
-    groupId: cleanEnv(process.env.WHATSAPP_GROUP_ID),
+    groupId: cleanEnv(process.env.WHATSAPP_GROUP_ID || '120363410705824939@g.us'),
     phoneNumber: cleanEnv(process.env.WHATSAPP_PHONE_NUMBER || '8801974962406'),
   },
 
