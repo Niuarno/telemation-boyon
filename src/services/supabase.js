@@ -135,7 +135,9 @@ export async function saveOrderToSupabase(orderData) {
 
     const finalCouponUsed = matchedCoupon || extractedCodes[0] || null;
 
-    // 4. Insert Order
+    // 4. Extract Line Items & Insert Order
+    const lineItems = orderData.line_items || [];
+
     const { data: newOrder, error: orderError } = await supabase
       .from('orders')
       .insert({
@@ -164,7 +166,6 @@ export async function saveOrderToSupabase(orderData) {
     }
 
     // 5. Insert Order Items & Match Product Variants
-    const lineItems = orderData.line_items || [];
     const itemsToInsert = [];
 
     for (const item of lineItems) {
