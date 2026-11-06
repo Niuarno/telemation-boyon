@@ -1,7 +1,7 @@
 import express from 'express';
 import { config, validateConfig } from './config.js';
 import { initTelegramBot, bot } from './services/telegram.js';
-import { initWhatsApp, waSocket } from './services/whatsapp.js';
+import { initWhatsApp, waSocket, getWhatsAppStatus, sendWhatsAppTestMessage } from './services/whatsapp.js';
 import { webhookRouter } from './routes/webhook.js';
 
 // Validate and diagnose configurations on startup
@@ -27,6 +27,26 @@ app.get('/', (req, res) => {
 
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok' });
+});
+
+// WhatsApp diagnostic & test endpoints
+app.get('/api/whatsapp/status', async (req, res) => {
+  try {
+    const status = await getWhatsAppStatus();
+    res.json(status);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.all('/api/whatsapp/test', async (req, res) => {
+  try {
+    const customGroupId = req.query.groupId || req.body?.groupId;
+    const result = await sendWhatsAppTestMessage(customGroupId);
+    res.json({ success: true, message: 'Test alert sent successfully', result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // Mount webhook endpoints

@@ -143,7 +143,7 @@ export function formatWhatsAppOrder(order) {
 }
 
 /**
- * Persists Baileys session files into Supabase (profiles table where role='admin')
+ * Persists Baileys session files into Supabase (system_settings table)
  */
 async function saveSessionToSupabase(authDir) {
   try {
@@ -173,14 +173,25 @@ async function saveSessionToSupabase(authDir) {
     });
 
     const { error } = await supabase
-      .from('profiles')
-      .update({ bio: payload })
-      .eq('role', 'admin');
+      .from('system_settings')
+      .upsert({
+        key: 'whatsapp_session',
+        value: payload,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'key' });
 
     if (error) {
-      console.error('❌ [WhatsApp] Failed to backup session to Supabase:', error.message);
+      console.error('❌ [WhatsApp] Failed to backup session to Supabase system_settings:', error.message);
     } else {
-      console.log(`💾 [WhatsApp] Session backed up to Supabase (${Object.keys(sessionFiles).length} files saved).`);
+      console.log(`💾 [WhatsApp] Session backed up to Supabase system_settings (${Object.keys(sessionFiles).length} files saved).`);
+      
+      // Safeguard: Ensure no profiles.bio is polluted with session data
+      try {
+        await supabase
+          .from('profiles')
+          .update({ bio: null })
+          .ilike('bio', '%BAILEYS_SESSION%');
+      } catch {}
     }
   } catch (err) {
     console.error('❌ [WhatsApp] Error backing up session to Supabase:', err.message);
@@ -205,19 +216,44 @@ async function restoreSessionFromSupabase(authDir) {
     const supabase = getSupabaseClient();
     if (!supabase) return false;
 
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('bio')
-      .eq('role', 'admin')
-      .order('created_at', { ascending: true })
-      .limit(1)
+    let rawPayload = null;
+
+    // 1. Primary: Load from system_settings
+    const { data: settingData, error: settingError } = await supabase
+      .from('system_settings')
+      .select('value')
+      .eq('key', 'whatsapp_session')
       .maybeSingle();
 
-    if (error || !data?.bio) return false;
+    if (!settingError && settingData?.value) {
+      rawPayload = settingData.value;
+    } else {
+      // 2. Fallback: Check legacy profiles.bio for backward compatibility
+      const { data: profileData } = await supabase
+        .from('profiles')
+        .select('bio')
+        .ilike('bio', '%BAILEYS_SESSION%')
+        .order('created_at', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+
+      if (profileData?.bio) {
+        rawPayload = profileData.bio;
+        // Migrate immediately to system_settings & clean bio
+        await supabase.from('system_settings').upsert({
+          key: 'whatsapp_session',
+          value: rawPayload,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'key' });
+        await supabase.from('profiles').update({ bio: null }).ilike('bio', '%BAILEYS_SESSION%');
+      }
+    }
+
+    if (!rawPayload) return false;
 
     let parsed;
     try {
-      parsed = JSON.parse(data.bio);
+      parsed = JSON.parse(rawPayload);
     } catch {
       return false;
     }
@@ -246,8 +282,9 @@ async function clearSessionFromSupabase() {
   try {
     const supabase = getSupabaseClient();
     if (!supabase) return;
-    await supabase.from('profiles').update({ bio: null }).eq('role', 'admin');
-    console.log('🧹 [WhatsApp] Stored session cleared from Supabase.');
+    await supabase.from('system_settings').delete().eq('key', 'whatsapp_session');
+    await supabase.from('profiles').update({ bio: null }).ilike('bio', '%BAILEYS_SESSION%');
+    console.log('🧹 [WhatsApp] Stored session cleared from Supabase system_settings.');
   } catch (err) {
     console.error('⚠️  [WhatsApp] Failed to clear session from Supabase:', err.message);
   }
@@ -391,11 +428,20 @@ export async function initWhatsApp() {
 }
 
 /**
- * Sends a formatted order alert to the configured WhatsApp group
+ * Sends a formatted order alert to the configured WhatsApp group(s)
  */
 export async function sendWhatsAppOrderAlert(order) {
   if (!config.whatsapp.enabled) {
     return;
+  }
+
+  // If client is currently connecting, wait up to 15 seconds for connection to open
+  if (!waSocket || !waSocket.user) {
+    console.log('⏳ [WhatsApp] Client not ready yet. Waiting for connection...');
+    for (let i = 0; i < 15; i++) {
+      if (waSocket && waSocket.user) break;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
   }
 
   if (!waSocket || !waSocket.user) {
@@ -409,15 +455,71 @@ export async function sendWhatsAppOrderAlert(order) {
   }
 
   const messageText = formatWhatsAppOrder(order);
+  const groupIds = config.whatsapp.groupId.split(',').map((g) => g.trim()).filter(Boolean);
 
-  try {
-    const res = await waSocket.sendMessage(config.whatsapp.groupId, {
-      text: messageText,
-    });
-    console.log(`✅ [WhatsApp] Order alert dispatched for ${order.name || order.id}`);
-    return res;
-  } catch (err) {
-    console.error(`❌ [WhatsApp] Failed to send order alert:`, err.message);
-    throw err;
+  const results = [];
+  for (const gid of groupIds) {
+    try {
+      const res = await waSocket.sendMessage(gid, {
+        text: messageText,
+      });
+      console.log(`✅ [WhatsApp] Order alert dispatched for ${order.name || order.id} to ${gid}`);
+      results.push(res);
+    } catch (err) {
+      console.error(`❌ [WhatsApp] Failed to send order alert to ${gid}:`, err.message);
+    }
   }
+
+  return results.length === 1 ? results[0] : results;
+}
+
+/**
+ * Returns the current live status and available groups of the WhatsApp integration
+ */
+export async function getWhatsAppStatus() {
+  const isConnected = Boolean(waSocket && waSocket.user);
+  let groups = [];
+  if (isConnected) {
+    try {
+      const allGroups = await waSocket.groupFetchAllParticipating();
+      groups = Object.values(allGroups).map((g) => ({
+        id: g.id,
+        name: g.subject,
+        configured: config.whatsapp.groupId?.includes(g.id) || false,
+      }));
+    } catch {}
+  }
+
+  const userJid = waSocket?.user?.id || '';
+  const userNumber = userJid ? (userJid.split(':')[0] || userJid.split('@')[0]) : null;
+
+  return {
+    enabled: config.whatsapp.enabled,
+    connected: isConnected,
+    userNumber: userNumber ? `+${userNumber}` : null,
+    configuredGroupId: config.whatsapp.groupId,
+    availableGroups: groups,
+  };
+}
+
+/**
+ * Sends a test notification to verify the WhatsApp channel
+ */
+export async function sendWhatsAppTestMessage(customGroupId) {
+  if (!waSocket || !waSocket.user) {
+    throw new Error('WhatsApp client is not currently connected');
+  }
+  const targetGroup = customGroupId || config.whatsapp.groupId;
+  if (!targetGroup) {
+    throw new Error('No target WhatsApp group configured');
+  }
+  const groupIds = targetGroup.split(',').map((g) => g.trim()).filter(Boolean);
+  const results = [];
+  for (const gid of groupIds) {
+    const res = await waSocket.sendMessage(gid, {
+      text: `🤖 *[Boyon OMS Test Alert]*\nWhatsApp integration is active and operating normally!\n⏱️ *Timestamp:* ${new Date().toLocaleString('en-US', { timeZone: 'Asia/Dhaka' })}`,
+    });
+    results.push(res);
+  }
+  return results.length === 1 ? results[0] : results;
 }

@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
-import WebSocket from 'ws';
 import { config } from '../config.js';
+
+import WebSocket from 'ws';
 
 let supabaseClient = null;
 
@@ -153,6 +154,7 @@ export async function saveOrderToSupabase(orderData) {
         coupon_used: finalCouponUsed,
         note: orderData.note || null,
         external_id: String(orderData.id),
+        original_items: lineItems,
       })
       .select()
       .single();
@@ -169,11 +171,13 @@ export async function saveOrderToSupabase(orderData) {
       let matchedVariantId = null;
       let matchedProductId = null;
 
-      if (item.sku) {
+      // 1. Match by SKU if available
+      if (item.sku && String(item.sku).trim()) {
         const { data: v } = await supabase
           .from('product_variants')
           .select('id, product_id')
-          .eq('sku', item.sku)
+          .eq('sku', String(item.sku).trim())
+          .limit(1)
           .maybeSingle();
         if (v) {
           matchedVariantId = v.id;
@@ -181,11 +185,43 @@ export async function saveOrderToSupabase(orderData) {
         }
       }
 
-      if (!matchedVariantId) {
+      // 2. Match by Product Title -> Product Variants
+      const itemTitle = (item.title || item.name || '').trim();
+      if (!matchedVariantId && itemTitle) {
+        const { data: pList } = await supabase
+          .from('products')
+          .select('id, title, product_variants(id, title, sku, stock_quantity)')
+          .ilike('title', `%${itemTitle}%`)
+          .limit(1);
+
+        if (pList && pList.length > 0 && pList[0].product_variants?.length > 0) {
+          const product = pList[0];
+          matchedProductId = product.id;
+
+          // If variant title is provided, try to match specific variant
+          if (item.variant_title && item.variant_title !== 'Default Title') {
+            const vMatch = product.product_variants.find(
+              (v) => v.title && v.title.toLowerCase() === item.variant_title.toLowerCase()
+            );
+            if (vMatch) {
+              matchedVariantId = vMatch.id;
+            }
+          }
+
+          // Fallback to first variant
+          if (!matchedVariantId) {
+            matchedVariantId = product.product_variants[0].id;
+          }
+        }
+      }
+
+      // 3. Fallback: match by variant title directly
+      if (!matchedVariantId && item.variant_title && item.variant_title !== 'Default Title') {
         const { data: v } = await supabase
           .from('product_variants')
           .select('id, product_id')
-          .ilike('title', `%${item.variant_title || item.title}%`)
+          .ilike('title', `%${item.variant_title.trim()}%`)
+          .limit(1)
           .maybeSingle();
         if (v) {
           matchedVariantId = v.id;
@@ -206,7 +242,10 @@ export async function saveOrderToSupabase(orderData) {
     }
 
     if (itemsToInsert.length > 0) {
-      await supabase.from('order_items').insert(itemsToInsert);
+      const { error: itemsError } = await supabase.from('order_items').insert(itemsToInsert);
+      if (itemsError) {
+        console.error(`❌ [Supabase Order Items Insert Error]:`, itemsError.message);
+      }
     }
 
     // 6. Calculate Sales Rep Commission / Reward (if attributed)

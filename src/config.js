@@ -40,7 +40,7 @@ export const config = {
   },
 
   supabase: {
-    url: cleanEnv(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://izqyqvmakdlwflryzspn.supabase.co'),
+    url: cleanEnv(process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://eipwyovlaebwvxglaooi.supabase.co'),
     serviceRoleKey: cleanEnv(process.env.SUPABASE_SERVICE_ROLE_KEY),
   },
 };
