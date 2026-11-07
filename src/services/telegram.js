@@ -1,6 +1,7 @@
 import { Bot } from 'grammy';
 import { config } from '../config.js';
 import { getRecentOrders, getOrderByIdOrName } from './shopify.js';
+import { sendWhatsAppOrderAlert } from './whatsapp.js';
 
 export let bot = null;
 
@@ -277,8 +278,8 @@ export function initTelegramBot() {
     }
   });
 
-  // /order command
-  bot.command('order', requireAuth, async (ctx) => {
+  // /order command (recalls order in Telegram and automatically forwards to WhatsApp)
+  const handleOrderLookup = async (ctx) => {
     const args = ctx.message.text.split(' ').slice(1);
     const query = args[0];
 
@@ -300,13 +301,31 @@ export function initTelegramBot() {
 
       const message = formatOrderNotification(order);
       await ctx.reply(message, { parse_mode: 'HTML', disable_web_page_preview: true });
+
+      // Automatically forward to WhatsApp group
+      if (config.whatsapp.enabled) {
+        try {
+          await sendWhatsAppOrderAlert(order);
+          await ctx.reply(`📲 <i>Order ${escapeHtml(order.name || query)} forwarded to WhatsApp group!</i>`, {
+            parse_mode: 'HTML',
+          });
+        } catch (waErr) {
+          console.error('Failed to forward order to WhatsApp from command:', waErr.message);
+          await ctx.reply(`⚠️ <i>Failed to forward to WhatsApp: ${escapeHtml(waErr.message)}</i>`, {
+            parse_mode: 'HTML',
+          });
+        }
+      }
     } catch (err) {
       console.error('Error in /order command:', err);
       await ctx.reply(`❌ <b>Failed to retrieve order:</b>\n<code>${escapeHtml(err.message)}</code>`, {
         parse_mode: 'HTML',
       });
     }
-  });
+  };
+
+  bot.command('order', requireAuth, handleOrderLookup);
+  bot.command('resend', requireAuth, handleOrderLookup);
 
   bot.catch((err) => {
     console.error('Telegram Bot Error:', err);
