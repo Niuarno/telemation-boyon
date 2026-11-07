@@ -40,6 +40,26 @@ export function verifyShopifyHmac(rawBody, hmacHeader, secret) {
   }
 }
 
+// In-memory deduplication cache to prevent duplicate alerts from retries or dual subscriptions (15-min TTL)
+const processedOrderAlerts = new Map();
+
+function isDuplicateOrder(orderId) {
+  const now = Date.now();
+  // Clean up entries older than 15 minutes
+  for (const [id, time] of processedOrderAlerts.entries()) {
+    if (now - time > 15 * 60 * 1000) {
+      processedOrderAlerts.delete(id);
+    }
+  }
+
+  if (processedOrderAlerts.has(orderId)) {
+    return true;
+  }
+
+  processedOrderAlerts.set(orderId, now);
+  return false;
+}
+
 /**
  * Shopify Webhook Endpoint: POST /api/webhooks/shopify
  */
@@ -64,7 +84,11 @@ webhookRouter.post('/shopify', async (req, res) => {
   // Shopify expects an immediate 200 OK response within 5 seconds
   res.status(200).send('Webhook received');
 
-  console.log(`\n📩 Received Shopify Webhook: [${topic}] from ${shopDomain || 'unknown'}`);
+  // Only dispatch order alerts for order creation events
+  if (topic && topic !== 'orders/create' && !topic.endsWith('/create')) {
+    console.log(`ℹ️  [Webhook] Skipping alerts for non-create topic [${topic}].`);
+    return;
+  }
 
   const orderData = req.body;
 
@@ -74,6 +98,15 @@ webhookRouter.post('/shopify', async (req, res) => {
   }
 
   const orderIdentifier = `#${orderData.order_number || orderData.name || orderData.id}`;
+  const dedupKey = String(orderData.id || orderData.name || orderData.order_number);
+
+  // Guard against duplicate webhook deliveries (prevents duplicate WhatsApp and Telegram messages)
+  if (isDuplicateOrder(dedupKey)) {
+    console.log(`ℹ️  [Webhook] Duplicate webhook received for Order ${orderIdentifier}. Skipping duplicate alert.`);
+    return;
+  }
+
+  console.log(`\n🚀 Processing new Order: ${orderIdentifier} from ${shopDomain}`);
 
   // Dispatch to Telegram and WhatsApp in parallel
   const dispatches = [];
