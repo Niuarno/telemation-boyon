@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
+    "reconnect:whatsapp": "node scripts/reconnect-whatsapp.js",
     "test:webhook": "node tests/mock-webhook.js"
   },
   "keywords": [
